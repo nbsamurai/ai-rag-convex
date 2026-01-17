@@ -1,5 +1,5 @@
 import { v } from "convex/values";
-import { mutation, query } from "./_generated/server";
+import { internalMutation, mutation, query } from "./_generated/server";
 import { getAuthUserId } from "@convex-dev/auth/server";
 
 export const getUserNotes = query({
@@ -13,22 +13,35 @@ export const getUserNotes = query({
     },
 });
 
-export const createNote = mutation({
+export const createNoteWithEmbeddings = internalMutation({
     args: {
         title: v.string(),
         body: v.string(),
+        userId: v.id("users"),
+        embeddings: v.array(v.object({
+            content: v.string(),
+            embedding: v.array(v.float64()),
+        })),
     },
     returns: v.id("notes"),
     handler: async (ctx, args) => {
-        const userId = await getAuthUserId(ctx);
-        if (!userId) {
-            throw new Error("User must be authenticated to create a note");
-        }
-        return await ctx.db.insert("notes", {
+        
+        const noteId = await ctx.db.insert("notes", {
             title: args.title,
             body: args.body,
-            userId: userId,
+            userId: args.userId,
         });
+
+        for (const embeddingData of args.embeddings) {
+            await ctx.db.insert("noteEmbeddings", {
+                content: embeddingData.content,
+                embedding: embeddingData.embedding,
+                noteId,
+                userId: args.userId,
+            });
+        }
+
+        return noteId;
     },
 });
 
@@ -49,7 +62,15 @@ export const deleteNote = mutation({
         if (note.userId !== userId) {
             throw new Error("User does not have permission to delete this note");
         }
+       
+        const embeddings = await ctx.db.query("noteEmbeddings").withIndex("by_note_id", (q) => q.eq("noteId", args.noteId)).collect();
+
+        for (const embedding of embeddings) {
+            await ctx.db.delete(embedding._id);
+        }
+
         await ctx.db.delete(args.noteId);
+
         return true;
     },
 });
